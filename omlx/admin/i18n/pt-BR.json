@@ -360,6 +360,8 @@
   "settings.resource.cold_cache_description": "Armazenamento persistente em SSD para blocos de cache KV descartados.",
   "settings.resource.prefill_memory_guard": "Guarda de memória",
   "settings.resource.prefill_memory_guard_description": "Pausar o agendamento de prefill e descarregar modelos LRU quando a pressão de memória se aproximar do teto derivado do nível de reserva à direita.",
+  "settings.resource.abort_under_pressure": "Cancelar solicitações sob pressão",
+  "settings.resource.abort_under_pressure_description": "Quando ativado, o guardião de memória pode cancelar solicitações em andamento sob forte pressão de memória. Desative para evitar cancelar trabalho ativo em operação normal: o guardião continua recusando cargas grandes demais, descarregando modelos ociosos e reduzindo caches, deixando a pressão residual para a compressão e o swap do macOS. Uma salvaguarda de memória física de último recurso ainda pode parar uma solicitação para evitar que todo o processo trave.",
   "settings.resource.max_concurrent_requests": "Máx. de Requisições Simultâneas",
   "settings.resource.max_concurrent_requests_hint": "Número máximo de requisições processadas simultaneamente. Valores maiores aumentam o throughput, mas usam mais memória.",
   "settings.resource.embedding_batch_size": "Tamanho do Lote de Embedding",

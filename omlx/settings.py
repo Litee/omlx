@@ -380,6 +380,18 @@ class MemorySettings:
     # hard triggers in-flight abort. Gap >= 10% absorbs macOS compressed-memory oscillation.
     soft_threshold: float = 0.85
     hard_threshold: float = 0.95
+    # When False, the enforcer never cancels in-flight requests under memory
+    # pressure. It still refuses oversized loads, evicts idle models, shrinks
+    # the hot cache, and requests idle reclaim — but lets macOS absorb residual
+    # pressure via compression/swap instead of aborting active work. Trades
+    # OOM-panic protection for a no-kill interactive experience.
+    #
+    # NOTE: this does NOT disable the physical-cap last resort in the scheduler
+    # (the mid-prefill abort at min(static, metal_cap)). That guard exists to
+    # stop Metal from aborting the entire process — killing one request is
+    # strictly better than crashing every request — so it remains active even
+    # when abort_under_pressure is False.
+    abort_under_pressure: bool = True
     # Adaptive prefill throttle. When current memory >= hard_cap * safe_zone_ratio
     # the next chunk is sized so its predicted transient stays under the cap.
     # If even prefill_min_chunk_tokens would exceed the cap, the request is
@@ -395,6 +407,7 @@ class MemorySettings:
             "memory_guard_custom_ceiling_gb": self.memory_guard_custom_ceiling_gb,
             "soft_threshold": self.soft_threshold,
             "hard_threshold": self.hard_threshold,
+            "abort_under_pressure": self.abort_under_pressure,
             "prefill_safe_zone_ratio": self.prefill_safe_zone_ratio,
             "prefill_min_chunk_tokens": self.prefill_min_chunk_tokens,
         }
@@ -413,6 +426,7 @@ class MemorySettings:
             ),
             soft_threshold=float(data.get("soft_threshold", 0.85)),
             hard_threshold=float(data.get("hard_threshold", 0.95)),
+            abort_under_pressure=bool(data.get("abort_under_pressure", True)),
             prefill_safe_zone_ratio=float(data.get("prefill_safe_zone_ratio", 0.80)),
             prefill_min_chunk_tokens=int(data.get("prefill_min_chunk_tokens", 32)),
         )

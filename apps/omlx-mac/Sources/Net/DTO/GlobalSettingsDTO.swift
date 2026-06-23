@@ -67,6 +67,7 @@ struct GlobalSettingsDTO: Codable, Equatable, Sendable {
     /// server preflights prefill memory before kicking the engine.
     struct MemorySettings: Codable, Equatable, Sendable {
         let prefillMemoryGuard: Bool?
+        let abortUnderPressure: Bool?
         let memoryGuardTier: String?
         let memoryGuardCustomCeilingGb: Double?
     }
@@ -244,6 +245,10 @@ struct GlobalSettingsPatch: Encodable, Equatable, Sendable {
     // memory guard settings are hot-applied.
 
     var memoryPrefillMemoryGuard: Bool? = nil
+    /// When false, the memory guard never cancels in-flight requests under
+    /// pressure; it still refuses oversized loads, evicts idle models, and
+    /// shrinks caches. Hot-applied.
+    var memoryAbortUnderPressure: Bool? = nil
     /// Memory guard tier: `"safe"`, `"balanced"`, `"aggressive"`, or
     /// `"custom"`. For custom, pair with `memoryGuardCustomCeilingGb`.
     var memoryGuardTier: String? = nil

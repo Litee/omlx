@@ -270,6 +270,7 @@ class ProcessMemoryEnforcer:
         global_settings: GlobalSettings | None = None,
         soft_threshold: float | None = None,
         hard_threshold: float = 0.95,
+        abort_under_pressure: bool = True,
         prefill_safe_zone_ratio: float = 0.89,
         prefill_min_chunk_tokens: int = 256,
     ):
@@ -296,6 +297,13 @@ class ProcessMemoryEnforcer:
                 default instead.
             hard_threshold: Fraction of ceiling that triggers hard action
                 (LRU/non-pinned aborts, loading aborts, and idle reclaim).
+            abort_under_pressure: When False, the enforcer never cancels
+                in-flight requests under hard/emergency pressure. It still
+                refuses oversized loads, evicts idle models, shrinks the hot
+                cache, and requests idle reclaim; residual pressure is left to
+                macOS compression/swap. Does NOT disable the scheduler's
+                physical-cap mid-prefill abort (the OOM-panic safeguard at
+                min(static, metal_cap)). Defaults to True (legacy behavior).
             prefill_safe_zone_ratio: Fraction of hard cap below which prefill
                 runs at full chunk size; above triggers adaptive shrink.
             prefill_min_chunk_tokens: Floor for adaptive shrink.
@@ -906,6 +914,19 @@ class ProcessMemoryEnforcer:
             self._propagate_memory_limit()
         logger.info(f"Prefill memory guard: {'enabled' if value else 'disabled'}")
 
+    @property
+    def abort_under_pressure(self) -> bool:
+        """Whether the enforcer may cancel in-flight requests under pressure."""
+        return self._abort_under_pressure
+
+    @abort_under_pressure.setter
+    def abort_under_pressure(self, value: bool) -> None:
+        self._abort_under_pressure = bool(value)
+        logger.info(
+            "Abort under pressure: %s",
+            "enabled" if self._abort_under_pressure else "disabled",
+        )
+
     @staticmethod
     def _resolve_scheduler(entry: Any) -> Any | None:
         """Resolve the watermark target (Scheduler or DFlash guard) from an
@@ -1300,7 +1321,8 @@ class ProcessMemoryEnforcer:
                         # does not reduce pressure.
                         entry = self._engine_pool._entries.get(victim)
                         if (
-                            entry
+                            self._abort_under_pressure
+                            and entry
                             and entry.engine is not None
                             and hasattr(entry.engine, "abort_all_requests")
                         ):
@@ -1324,7 +1346,11 @@ class ProcessMemoryEnforcer:
                 # No non-pinned victim. Loaded models are pinned or no loaded
                 # engines exist at all.
                 if new_level == "hard":
-                    busy_victim = self._find_lru_busy_non_pinned_victim_locked()
+                    busy_victim = (
+                        self._find_lru_busy_non_pinned_victim_locked()
+                        if self._abort_under_pressure
+                        else None
+                    )
                     if busy_victim is not None:
                         entry = self._engine_pool._entries.get(busy_victim)
                         aborted = 0
@@ -1372,8 +1398,12 @@ class ProcessMemoryEnforcer:
                             else:
                                 emergency_current = 0
                             if emergency and emergency_current >= ceiling:
-                                aborted = await (
-                                    self._abort_loaded_requests_for_memory_emergency()
+                                aborted = (
+                                    await (
+                                        self._abort_loaded_requests_for_memory_emergency()
+                                    )
+                                    if self._abort_under_pressure
+                                    else 0
                                 )
                                 if aborted > 0:
                                     logger.warning(
@@ -1485,6 +1515,7 @@ class ProcessMemoryEnforcer:
             "scheduler_abort_limit_formatted": _format_gb(scheduler_abort),
             "soft_threshold": self._soft_threshold,
             "hard_threshold": self._hard_threshold,
+            "abort_under_pressure": self._abort_under_pressure,
             "soft_bytes": soft,
             "soft_formatted": _format_gb(soft),
             "hard_bytes": hard,

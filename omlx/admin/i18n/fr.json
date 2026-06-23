@@ -360,6 +360,8 @@
   "settings.resource.cold_cache_description": "Stockage SSD persistant pour les blocs de cache KV évincés.",
   "settings.resource.prefill_memory_guard": "Protection mémoire",
   "settings.resource.prefill_memory_guard_description": "Estimez la mémoire avant le pré-remplissage et reportez la planification sous pression mémoire pour éviter les défaillances d'allocation Metal.",
+  "settings.resource.abort_under_pressure": "Annuler les requêtes sous pression",
+  "settings.resource.abort_under_pressure_description": "Lorsqu'il est activé, le garde-mémoire peut annuler les requêtes en cours sous forte pression mémoire. Désactivez-le pour éviter d'annuler le travail actif en fonctionnement normal : le garde continue de refuser les chargements trop volumineux, d'évincer les modèles inactifs et de réduire les caches, laissant la pression résiduelle à la compression et au swap de macOS. Une protection de mémoire physique de dernier recours peut tout de même arrêter une requête pour éviter que tout le processus ne plante.",
   "settings.resource.max_concurrent_requests": "Nombre max de requêtes simultanées",
   "settings.resource.max_concurrent_requests_hint": "Nombre maximal de requêtes traitées simultanément. Les valeurs plus élevées augmentent le débit mais utilisent plus de mémoire.",
   "settings.resource.embedding_batch_size": "Taille de lot des embeddings",

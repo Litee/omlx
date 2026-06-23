@@ -223,6 +223,7 @@ class GlobalSettingsRequest(BaseModel):
 
     # Memory enforcement
     memory_prefill_memory_guard: bool | None = None
+    memory_abort_under_pressure: bool | None = None
     memory_guard_tier: str | None = (
         None  # "safe" / "balanced" / "aggressive" / "custom"
     )
@@ -3185,6 +3186,7 @@ async def get_global_settings(is_admin: bool = Depends(require_admin)):
         },
         "memory": {
             "prefill_memory_guard": global_settings.memory.prefill_memory_guard,
+            "abort_under_pressure": global_settings.memory.abort_under_pressure,
             "memory_guard_tier": global_settings.memory.memory_guard_tier,
             "memory_guard_custom_ceiling_gb": global_settings.memory.memory_guard_custom_ceiling_gb,
         },
@@ -3485,6 +3487,23 @@ async def update_global_settings(
         logger.info(
             f"Prefill memory guard "
             f"{'enabled' if request.memory_prefill_memory_guard else 'disabled'}"
+        )
+
+    # Apply abort-under-pressure setting (Live)
+    if request.memory_abort_under_pressure is not None:
+        global_settings.memory.abort_under_pressure = (
+            request.memory_abort_under_pressure
+        )
+        from ..server import _server_state
+
+        if _server_state.process_memory_enforcer is not None:
+            _server_state.process_memory_enforcer.abort_under_pressure = (
+                request.memory_abort_under_pressure
+            )
+        runtime_applied.append("abort_under_pressure")
+        logger.info(
+            f"Abort under pressure "
+            f"{'enabled' if request.memory_abort_under_pressure else 'disabled'}"
         )
 
     # Apply scheduler settings (restart required)

@@ -2398,3 +2398,171 @@ class TestDFlashGuardPropagation:
         engine.scheduler = scheduler
         entry = _make_entry("model-a", engine=engine)
         assert enforcer._resolve_scheduler(entry) is scheduler
+
+
+class TestAbortUnderPressureSuppression:
+    """Tests for the `abort_under_pressure=False` switch.
+
+    When disabled, the enforcer must never cancel in-flight requests under
+    hard or emergency pressure, but must still evict idle models so the
+    guard remains useful (LM-Studio-like graceful degradation).
+    """
+
+    @pytest.fixture
+    def pool(self):
+        p = MagicMock()
+        p._lock = asyncio.Lock()
+        p._find_lru_victim = MagicMock(return_value=None)
+        p._unload_engine = AsyncMock()
+        p._find_pending_unload_ready_locked = MagicMock(return_value=None)
+        p._unload_pending_if_idle_locked = AsyncMock(return_value=False)
+        p._mark_pending_unload_locked = MagicMock(return_value=False)
+        p._entries = {}
+        return p
+
+    @pytest.mark.asyncio
+    async def test_busy_final_model_not_aborted_when_suppressed(self, pool):
+        """A busy, non-pinned final model must NOT be aborted when the
+        switch is off (legacy behavior would abort + mark pending-unload)."""
+        enforcer = _make_enforcer(
+            pool, ceiling=10 * 1024**3, abort_under_pressure=False
+        )
+        engine = MagicMock()
+        engine.has_active_requests.return_value = True
+        engine.abort_all_requests = AsyncMock(return_value=3)
+        entry = _make_entry("busy-model", engine=engine)
+        entry.in_use = 1
+        pool._entries = {"busy-model": entry}
+        pool._find_lru_victim.return_value = None
+
+        with patch("omlx.process_memory_enforcer.mx") as mock_mx:
+            mock_mx.get_active_memory.side_effect = _cycling(
+                [15 * 1024**3, 15 * 1024**3]
+            )
+            await enforcer._check_and_enforce()
+
+        engine.abort_all_requests.assert_not_awaited()
+        pool._mark_pending_unload_locked.assert_not_called()
+        assert entry.pending_unload_reason is None
+        assert entry.abort_requested is False
+
+    @pytest.mark.asyncio
+    async def test_busy_final_model_aborted_when_enabled(self, pool):
+        """Control: with the switch ON (default) the busy model IS aborted,
+        proving the suppression test above is meaningful."""
+        enforcer = _make_enforcer(
+            pool, ceiling=10 * 1024**3, abort_under_pressure=True
+        )
+        engine = MagicMock()
+        engine.has_active_requests.return_value = False
+        engine.abort_all_requests = AsyncMock(return_value=3)
+        entry = _make_entry("busy-model", engine=engine)
+        entry.in_use = 1
+        pool._entries = {"busy-model": entry}
+        pool._find_lru_victim.return_value = None
+
+        with patch("omlx.process_memory_enforcer.mx") as mock_mx:
+            mock_mx.get_active_memory.side_effect = _cycling(
+                [15 * 1024**3, 15 * 1024**3]
+            )
+            await enforcer._check_and_enforce()
+
+        engine.abort_all_requests.assert_awaited_once()
+        pool._mark_pending_unload_locked.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_idle_model_still_evicted_when_suppressed(self, pool):
+        """Suppressing aborts must NOT disable idle-model eviction: an idle
+        LRU victim is still unloaded under hard pressure."""
+        enforcer = _make_enforcer(
+            pool, ceiling=10 * 1024**3, abort_under_pressure=False
+        )
+        engine = MagicMock()
+        engine.has_active_requests.return_value = False
+        engine.abort_all_requests = AsyncMock(return_value=0)
+        entry = _make_entry("idle-model", engine=engine)
+        pool._entries = {"idle-model": entry}
+        pool._find_lru_victim.return_value = "idle-model"
+
+        async def fake_unload(model_id):
+            pool._entries[model_id].engine = None
+
+        pool._unload_engine.side_effect = fake_unload
+
+        with patch("omlx.process_memory_enforcer.mx") as mock_mx:
+            mock_mx.get_active_memory.side_effect = _cycling(
+                [15 * 1024**3, 15 * 1024**3, 8 * 1024**3]
+            )
+            await enforcer._check_and_enforce()
+
+        # Eviction happened; the abort-before-evict call was suppressed.
+        pool._unload_engine.assert_awaited_once_with("idle-model")
+        engine.abort_all_requests.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_emergency_does_not_abort_pinned_when_suppressed(self, pool):
+        """Emergency over-ceiling pressure must NOT abort requests on a pinned
+        model when the switch is off."""
+        enforcer = _make_enforcer(
+            pool,
+            ceiling=100 * 1024**3,
+            soft_threshold=0.85,
+            hard_threshold=0.95,
+            abort_under_pressure=False,
+        )
+        engine = MagicMock()
+        engine.abort_all_requests = AsyncMock(return_value=3)
+        entry = _make_entry("pinned", engine=engine, is_pinned=True)
+        pool._entries = {"pinned": entry}
+        pool._find_lru_victim.return_value = None
+
+        with (
+            patch("omlx.process_memory_enforcer.mx") as mock_mx,
+            patch("omlx.process_memory_enforcer.get_phys_footprint") as gpf,
+        ):
+            mock_mx.get_active_memory.return_value = 60 * 1024**3
+            gpf.return_value = 103 * 1024**3  # well over ceiling → emergency
+            await enforcer._check_and_enforce()
+
+        engine.abort_all_requests.assert_not_awaited()
+        assert entry.engine is engine
+
+    @pytest.mark.asyncio
+    async def test_idle_reclaim_still_requested_when_suppressed(self, pool):
+        """With aborts suppressed and only a pinned model under emergency
+        pressure, the enforcer must fall through to request_idle_reclaim()
+        instead of cancelling work — the graceful-degradation path."""
+        enforcer = _make_enforcer(
+            pool,
+            ceiling=100 * 1024**3,
+            soft_threshold=0.85,
+            hard_threshold=0.95,
+            abort_under_pressure=False,
+        )
+        scheduler = MagicMock()
+        engine = MagicMock(spec=["scheduler", "abort_all_requests"])
+        engine.scheduler = scheduler
+        engine.abort_all_requests = AsyncMock(return_value=3)
+        entry = _make_entry("pinned", engine=engine, is_pinned=True)
+        pool._entries = {"pinned": entry}
+        pool._find_lru_victim.return_value = None
+
+        with (
+            patch("omlx.process_memory_enforcer.mx") as mock_mx,
+            patch("omlx.process_memory_enforcer.get_phys_footprint") as gpf,
+        ):
+            mock_mx.get_active_memory.return_value = 60 * 1024**3
+            gpf.return_value = 103 * 1024**3  # emergency over ceiling
+            await enforcer._check_and_enforce()
+
+        # Active work preserved; graceful idle-reclaim still requested.
+        engine.abort_all_requests.assert_not_awaited()
+        scheduler.request_idle_reclaim.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_property_setter_toggles_flag(self, pool):
+        enforcer = _make_enforcer(pool, ceiling=10 * 1024**3)
+        assert enforcer.abort_under_pressure is True
+        enforcer.abort_under_pressure = False
+        assert enforcer.abort_under_pressure is False
+        assert enforcer.get_status()["abort_under_pressure"] is False
